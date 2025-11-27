@@ -127,7 +127,7 @@ else:
     model_punc = None
 
 
-logger.info("模型已加载！现在只能同时支持一个客户端!!!!")
+logger.info("模型已加载！现在支持多个客户端同时连接 (请求将排队处理)")
 
 
 async def ws_reset(websocket):
@@ -353,9 +353,13 @@ async def ws_serve(websocket, path):
         logger.info("Exception:", e)
 
 
-async def async_vad(websocket, audio_in):
 
-    segments_result = model_vad.generate(input=audio_in, **websocket.status_dict_vad)[0]["value"]
+# Global lock for model inference
+model_lock = asyncio.Lock()
+
+async def async_vad(websocket, audio_in):
+    async with model_lock:
+        segments_result = model_vad.generate(input=audio_in, **websocket.status_dict_vad)[0]["value"]
     # logger.info(segments_result)
 
     speech_start = -1
@@ -391,15 +395,17 @@ async def async_asr(websocket, audio_in):
             
             # 调用ASR模型进行识别
             logger.info("调用ASR模型进行识别...")
-            rec_result = model_asr.generate(input=audio_in, **websocket.status_dict_asr)[0]
+            async with model_lock:
+                rec_result = model_asr.generate(input=audio_in, **websocket.status_dict_asr)[0]
             logger.info(f"ASR识别结果: {rec_result}")
             
             # 应用标点符号
             if model_punc is not None and len(rec_result["text"]) > 0:
                 logger.info(f"应用标点符号前: {rec_result['text']}")
-                rec_result = model_punc.generate(
-                    input=rec_result["text"], **websocket.status_dict_punc
-                )[0]
+                async with model_lock:
+                    rec_result = model_punc.generate(
+                        input=rec_result["text"], **websocket.status_dict_punc
+                    )[0]
                 logger.info(f"应用标点符号后: {rec_result['text']}")
             
             # 检查识别结果
@@ -450,9 +456,10 @@ async def async_asr(websocket, audio_in):
 async def async_asr_online(websocket, audio_in):
     if len(audio_in) > 0:
         # logger.info(websocket.status_dict_asr_online.get("is_final", False))
-        rec_result = model_asr_streaming.generate(
-            input=audio_in, **websocket.status_dict_asr_online
-        )[0]
+        async with model_lock:
+            rec_result = model_asr_streaming.generate(
+                input=audio_in, **websocket.status_dict_asr_online
+            )[0]
         # logger.info("online, ", rec_result)
         if websocket.mode == "2pass" and websocket.status_dict_asr_online.get("is_final", False):
             return
@@ -589,3 +596,4 @@ else:
     )
 asyncio.get_event_loop().run_until_complete(start_server)
 asyncio.get_event_loop().run_forever()
+
